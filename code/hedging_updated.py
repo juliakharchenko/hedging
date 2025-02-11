@@ -198,4 +198,4 @@ questions_file = "../data/hedging_questions.csv"
 questions = load_questions(questions_file)
 interview_results = analyze_candidate_performance(questions)
 # sorry my brain is dead now but you can modify this to make it move immediately into the results folder, but so that it also has sub folders
-save_results(interview_results, "interview_scores_llama_3.1_8b_instruct.csv")
+save_results(interview_results, "interview_scores_[model name].csv") # TODO: change model name!
