@@ -148,7 +148,53 @@ def determine_outcome_with_llm(responses):
     answer = outputs[0][input_ids.shape[-1]:]
     llm_answer = tokenizer.decode(answer, skip_special_tokens=True)
     return llm_answer
+    
+def determine_advance_or_not(response):
+    messages = [{"role": "user",
+        "content": f"""
+          Given the following responses, determine what result of an interview the response indicates, either
+          "Do not Advance", "Advance with reservations", or "Advance"
+          Return one of the three results only, and no extra explanation.
+          Example
+          Response: Based on the provided interview responses and their ratings, I would recommend that the candidate should:
 
+**Advance with reservations**
+
+The candidate has several strengths, including:
+
+1. Strong job/organizational fit (Score: 4) - They have relevant experience in mentoring junior developers and provide specific examples of their skills.
+2. High initiative (Score: 4) - They demonstrate a proactive and organized approach to task management.
+3. Good verbal communication (Score: 4) - They provide clear and concise responses that effectively communicate their ability to handle complex situations.
+          Result: "Advance with reservations"
+
+          Now, your turn.
+          Response: {response}
+          Result::
+      """
+                }]
+    input_ids = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        return_tensors="pt"
+    ).to(model.device)
+
+    terminators = [
+        tokenizer.eos_token_id,
+        tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    ]
+
+    outputs = model.generate(
+        input_ids,
+        max_new_tokens=256,
+        eos_token_id=terminators,
+        do_sample=True,
+        temperature=0.6,
+        top_p=0.9,
+    )
+    score = outputs[0][input_ids.shape[-1]:]
+    llm_score = tokenizer.decode(score, skip_special_tokens=True)
+    return llm_score
+    
 def analyze_candidate_performance(questions, num_sessions=20):
     """Conducts interview sessions, evaluates answers, and determines overall candidate performance."""
     evaluation_categories = [
@@ -177,7 +223,8 @@ def analyze_candidate_performance(questions, num_sessions=20):
                 responses_summary.append(f"Category: {category}, Score: {score}, Reason: {reason}")
 
             final_decision = determine_outcome_with_llm("\n".join(responses_summary))
-            row.extend([final_decision])
+            advance_or_not = determine_advance_or_not(final_decision)
+            row.extend([advance_or_not, final_decision])
             results.append(row)
     return results
 
