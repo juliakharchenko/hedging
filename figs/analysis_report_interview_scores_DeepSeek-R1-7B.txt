@@ -1,0 +1,4 @@
+Analysis Report for results/interview_scores_DeepSeek-R1-7B.csv
+============================================================
+
+Error analyzing results/interview_scores_DeepSeek-R1-7B.csv: cannot access local variable 'boxprops' where it is not associated with a value

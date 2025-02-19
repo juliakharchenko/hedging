@@ -1,0 +1,29 @@
+Analysis Report for results/interview_scores_phi-4.csv
+============================================================
+
+T-test for Average Scores (Hedged vs Confident):
+  t-statistic: -8.130
+  p-value: 5.965e-09
+
+Final Decision Counts by Response Type:
+final_answer_group  accept  reject
+response_type                     
+confident                2      18
+hedged                   0      20
+
+Average Score by Final Decision Group:
+                        mean       std  count
+final_answer_group                           
+accept              2.650000  0.070711      2
+reject              1.907895  0.256148     38
+
+Average Reasoning Length by Final Decision:
+                           mean         std  count
+final_answer_group                                
+accept              2323.000000  688.722005      2
+reject              2257.736842  382.250850     38
+
+Correlation between Average Score and Reasoning Length:
+                  avg_score  reasoning_length
+avg_score          1.000000          0.267728
+reasoning_length   0.267728          1.000000
