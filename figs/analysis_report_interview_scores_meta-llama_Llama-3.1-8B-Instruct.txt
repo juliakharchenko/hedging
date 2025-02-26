@@ -1,0 +1,29 @@
+Analysis Report for ../../results/new_results/normalized/interview_scores_meta-llama_Llama-3.1-8B-Instruct.csv
+============================================================
+
+T-test for Average Scores (Hedged vs Confident):
+  t-statistic: -13.958
+  p-value: 1.550e-16
+
+Final Decision Counts by Response Type:
+final_answer_group  accept  reject
+response_type                     
+confident               12       8
+hedged                   1      19
+
+Average Score by Final Decision Group:
+                        mean       std  count
+final_answer_group                           
+accept              2.792308  0.217798     13
+reject              2.396296  0.253410     27
+
+Average Reasoning Length by Final Decision:
+                          mean         std  count
+final_answer_group                               
+accept              850.769231  128.064537     13
+reject              864.444444  174.003831     27
+
+Correlation between Average Score and Reasoning Length:
+                  avg_score  reasoning_length
+avg_score          1.000000          0.037401
+reasoning_length   0.037401          1.000000

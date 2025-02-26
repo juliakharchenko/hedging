@@ -1,0 +1,29 @@
+Analysis Report for ../../results/new_results/normalized/interview_scores_allenai_OLMoE-1B-7B-0125-Instruct.csv
+============================================================
+
+T-test for Average Scores (Hedged vs Confident):
+  t-statistic: -9.278
+  p-value: 3.280e-10
+
+Final Decision Counts by Response Type:
+final_answer_group  accept  reject
+response_type                     
+confident               17       3
+hedged                   8      12
+
+Average Score by Final Decision Group:
+                    mean       std  count
+final_answer_group                       
+accept              3.30  0.285774     25
+reject              2.82  0.356971     15
+
+Average Reasoning Length by Final Decision:
+                       mean         std  count
+final_answer_group                            
+accept              1232.68  355.433974     25
+reject               749.40  408.326340     15
+
+Correlation between Average Score and Reasoning Length:
+                  avg_score  reasoning_length
+avg_score          1.000000          0.416877
+reasoning_length   0.416877          1.000000

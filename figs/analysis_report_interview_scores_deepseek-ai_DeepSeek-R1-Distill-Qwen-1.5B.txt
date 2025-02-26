@@ -1,0 +1,29 @@
+Analysis Report for ../../results/new_results/normalized/interview_scores_deepseek-ai_DeepSeek-R1-Distill-Qwen-1.5B.csv
+============================================================
+
+T-test for Average Scores (Hedged vs Confident):
+  t-statistic: -4.292
+  p-value: 1.294e-04
+
+Final Decision Counts by Response Type:
+final_answer_group  accept  reject
+response_type                     
+confident               20       0
+hedged                  19       1
+
+Average Score by Final Decision Group:
+                        mean       std  count
+final_answer_group                           
+accept              3.048718  0.349339     39
+reject              2.900000       NaN      1
+
+Average Reasoning Length by Final Decision:
+                           mean        std  count
+final_answer_group                               
+accept              1262.487179  77.757339     39
+reject              1227.000000        NaN      1
+
+Correlation between Average Score and Reasoning Length:
+                  avg_score  reasoning_length
+avg_score           1.00000           0.36199
+reasoning_length    0.36199           1.00000
