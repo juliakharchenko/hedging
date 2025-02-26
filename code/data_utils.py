@@ -22,7 +22,7 @@ def save_results(results: list, output_path: str) -> None:
     header = ["interview_round", "hedged_or_confident"]
     for i in range(1, 11):
         header.extend([
-            f"question_{i}", f"question_{i}_category", f"question_{i}_response",
+            f"question_{i}", f"question_{i}_response",
             f"question_{i}_score", f"question_{i}_score_reasoning"
         ])
     header.extend(["final_answer", "final_answer_reasoning"])
