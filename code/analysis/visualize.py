@@ -110,7 +110,7 @@ def plot_violin_hedged_confident(df: pd.DataFrame) -> None:
         data=df,
         palette="Set2",
         order=["hedged", "confident"],
-        inner="quartile"
+        # inner="quartile"
     )
     ax.set_title("Overall Score Distribution: Hedged vs. Confident (LLMs)", fontsize=16)
     ax.set_xlabel("Response Type", fontsize=14)
@@ -220,14 +220,26 @@ def plot_violin_overall_by_file(df: pd.DataFrame) -> None:
     """
     Creates a violin plot comparing the distribution of overall scores across LLMs.
     """
-    sorted_llms = sorted(df["file"].unique())
+    sorted_llms = df.groupby("file")["overall_score"].median().sort_values().index
+    # plt.figure(figsize=(10, 6))
+    # ax = sns.violinplot(
+    #     x="file",
+    #     y="overall_score",
+    #     data=df,
+    #     order=sorted_llms,
+    #     palette="coolwarm",
+    #     inner="quartile"
+    # )
+    # do the same as above but add an extra separation between response_type
     plt.figure(figsize=(10, 6))
     ax = sns.violinplot(
         x="file",
         y="overall_score",
         data=df,
         order=sorted_llms,
-        palette="coolwarm",
+        hue="response_type",
+        palette="Set1",
+        split=True,
         inner="quartile"
     )
     ax.set_title("Overall Score Distribution per LLM", fontsize=16)
@@ -238,7 +250,7 @@ def plot_violin_overall_by_file(df: pd.DataFrame) -> None:
     plt.show()
 
 # =============================================================================
-def additional_plots(df: pd.DataFrame) -> None:
+def score_vs_reasoning_length(df: pd.DataFrame) -> None:
     """
     Generates additional plots that might help answer the research question.
     For example, a scatter plot of overall score vs. reasoning length (if available).
@@ -303,7 +315,80 @@ def plot_slope_chart_hedged_confident(df: pd.DataFrame) -> None:
     plt.tight_layout()
     plt.show()
 
+# =============================================================================
+def plot_violin_score_by_question_contents(df: pd.DataFrame) -> None:
+    """
+    Creates two horizontal plots showing the distribution of scores (1-5) for each question.
+    
+    The function first extracts each question's text and corresponding score (from columns named like
+    "question_X" and "question_X_score"), then filters out questions with fewer than 5 responses.
+    
+    It computes the mean score for each question and uses that to select the top 10 easiest 
+    (highest mean score) and top 10 hardest (lowest mean score) questions. 
+    Both plots share the same x-axis so that distributions can be compared directly.
+    """
+    # Find all columns that match the pattern for question scores.
+    score_cols = [col for col in df.columns if re.match(r'^question_\d+_score$', col)]
+    if not score_cols:
+        print("No question score columns found in the DataFrame.")
+        return
 
+    # Build a long DataFrame with columns: "question" and "score"
+    data_list = []
+    for score_col in score_cols:
+        # Assume the corresponding question text is in the column without the "_score" suffix.
+        question_col = score_col.replace("_score", "")
+        if question_col in df.columns:
+            data = df[[question_col, score_col]].copy()
+            data.columns = ["question", "score"]
+            data_list.append(data)
+    if not data_list:
+        print("No question data extracted.")
+        return
+
+    # Concatenate data for all questions.
+    data_long = pd.concat(data_list, ignore_index=True)
+    # Filter out questions with fewer than 5 responses.
+    data_long = data_long[data_long.groupby('question')['score'].transform('count') > 5]
+
+    # Compute the mean score per question.
+    mean_scores = data_long.groupby("question")["score"].mean().reset_index()
+
+    # Select easiest (highest mean scores) and hardest (lowest mean scores) questions.
+    easiest_questions = mean_scores.sort_values("score", ascending=False).head(10)["question"]
+    hardest_questions = mean_scores.sort_values("score", ascending=True).head(10)["question"]
+
+    easiest_data = data_long[data_long["question"].isin(easiest_questions)]
+    hardest_data = data_long[data_long["question"].isin(hardest_questions)]
+
+    # Define a common x-axis range since scores are between 1 and 5.
+    x_limits = (0.8, 5.2)
+
+    # Create two subplots (vertical layout) with shared x-axis.
+    fig, axs = plt.subplots(2, 1, figsize=(12, 16), sharex=True)
+
+    # Plot easiest questions.
+    sns.boxplot(x="score", y="question", data=easiest_data, color="lightgray",
+                orient="h", whis=[0, 100], ax=axs[0])
+    sns.stripplot(x="score", y="question", data=easiest_data, size=4,
+                  color="black", jitter=True, orient="h", ax=axs[0])
+    axs[0].set_title("Top 10 Easiest Questions by Mean Score", fontsize=16)
+    axs[0].set_xlabel("")  # Remove x-label on the top plot.
+    axs[0].set_ylabel("Question", fontsize=14)
+    axs[0].set_xlim(x_limits)
+
+    # Plot hardest questions.
+    sns.boxplot(x="score", y="question", data=hardest_data, color="lightgray",
+                orient="h", whis=[0, 100], ax=axs[1])
+    sns.stripplot(x="score", y="question", data=hardest_data, size=4,
+                  color="black", jitter=True, orient="h", ax=axs[1])
+    axs[1].set_title("Top 10 Hardest Questions by Mean Score", fontsize=16)
+    axs[1].set_xlabel("Score (1-5)", fontsize=14)
+    axs[1].set_ylabel("Question", fontsize=14)
+    axs[1].set_xlim(x_limits)
+
+    plt.tight_layout()
+    plt.show()
 
 # =============================================================================
 def main():
@@ -325,7 +410,8 @@ def main():
     plot_stacked_bar_accept_reject(df)
     plot_violin_overall_by_file(df)
     plot_slope_chart_hedged_confident(df)
-    additional_plots(df)
+    score_vs_reasoning_length(df)
+    plot_violin_score_by_question_contents(df)
 
 if __name__ == "__main__":
     main()
