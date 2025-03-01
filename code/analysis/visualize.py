@@ -391,6 +391,66 @@ def plot_violin_score_by_question_contents(df: pd.DataFrame) -> None:
     plt.show()
 
 # =============================================================================
+# Plot average interview score vs. final decision
+def plot_avg_score_vs_decision(df: pd.DataFrame) -> None:
+    """
+    Creates a bar plot showing the average interview score for each final decision.
+    """
+    avg_scores = df.groupby("final_answer")["overall_score"].mean().sort_values()
+    plt.figure(figsize=(10, 6))
+    ax = sns.barplot(x=avg_scores.values, y=avg_scores.index, palette="coolwarm")
+    ax.set_title("Average Interview Score by Final Decision", fontsize=16)
+    
+    ax.set_xlabel("Average Score", fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+# =============================================================================
+# Make a plot where I can see per question the spread of scores (maybe per resposne too)
+def plot_violin_score_by_question(df: pd.DataFrame) -> None:
+    """
+    Creates a violin plot comparing the distribution of scores for each question.
+    """
+    # Find all columns that match the pattern for question scores.
+    score_cols = [col for col in df.columns if re.match(r'^question_\d+_score$', col)]
+    if not score_cols:
+        print("No question score columns found in the DataFrame.")
+        return
+
+    # Build a long DataFrame with columns: "question" and "score"
+    data_list = []
+    for score_col in score_cols:
+        # Assume the corresponding question text is in the column without the "_score" suffix.
+        question_col = score_col.replace("_score", "")
+        if question_col in df.columns:
+            data = df[[question_col, score_col]].copy()
+            data.columns = ["question", "score"]
+            data_list.append(data)
+    if not data_list:
+        print("No question data extracted.")
+        return
+
+    # Concatenate data for all questions.
+    data_long = pd.concat(data_list, ignore_index=True)
+    # Filter out questions with fewer than 5 responses.
+    data_long = data_long[data_long.groupby('question')['score'].transform('count') > 5]
+
+    plt.figure(figsize=(10, 6))
+    ax = sns.violinplot(
+        x="score",
+        y="question",
+        data=data_long,
+        palette="coolwarm",
+        inner="quartile"
+    )
+    ax.set_title("Score Distribution per Question", fontsize=16)
+    ax.set_xlabel("Score", fontsize=14)
+    ax.set_ylabel("Question", fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+
+# =============================================================================
 def main():
     if len(sys.argv) < 2:
         print("Usage: python visualize.py <path_to_csv_directory>")
@@ -412,6 +472,8 @@ def main():
     plot_slope_chart_hedged_confident(df)
     score_vs_reasoning_length(df)
     plot_violin_score_by_question_contents(df)
+    plot_avg_score_vs_decision(df)
+    plot_violin_score_by_question(df)
 
 if __name__ == "__main__":
     main()
