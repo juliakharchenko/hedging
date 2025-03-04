@@ -167,8 +167,6 @@ def train():
     epoch_cos_losses_logits = []
     epoch_kl_losses_logits = []
     epoch_kl_losses_hidden = []
-    epoch_alignments_hidden = []      # (avg cosine similarity on hidden states)
-    epoch_alignments_logits = []      # (avg cosine similarity on logits)
 
     eps = 1e-8
     for epoch in range(NUM_EPOCHS):
