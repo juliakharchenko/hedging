@@ -1,85 +1,98 @@
 import argparse
-import os
-import re
 import pandas as pd
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# Configuration parameters
-ORIGINAL_DATA_PATH = "../../data/hedging_questions.csv"
-OUTPUT_DATA_PATH = "generated_training_data.csv"
-HF_MODEL_NAME = "openai-community/gpt2"  # Change to any Hugging Face text-generation model
-NUM_FEW_SHOT = 5     # Number of few-shot examples to include in the prompt
-
-def load_original_data(path: str) -> pd.DataFrame:
-    return pd.read_csv(path)
-
-def get_few_shot_examples(df: pd.DataFrame, num_examples: int) -> str:
-    examples = []
-    sample_df = df.sample(n=num_examples, random_state=42)
-    for _, row in sample_df.iterrows():
-        example = (
-            f"Question: {row['Question']}\n"
-            f"Hedging Answer: {row['Hedging_Answer']}\n"
-            f"Confident Answer: {row['Confident_Answer']}"
-        )
-        examples.append(example)
-    return "\n\n".join(examples)
-
-def build_prompt(few_shot_examples: str) -> str:
-    prompt = (
-        "You are tasked with generating new question-answer triplets for a dataset of interview questions. Hedged answers indicate usage of hedging throughout language, and confident answers indicate confident language. The content of the hedged answers and confident answers, and the knowledge of the speaker, is exactly the same - the only difference between these answers is the language used.\n"
-        "Below are some examples of interview question-answer triplets:\n\n"
-        f"{few_shot_examples}\n\n"
-        "Now its your turn, generate a new interview question and its corresponding answers ensuring that it is in the following format (replace everything in and including the <>):\n"
-        "Question: <new question text>\n"
-        "Hedging Answer: <new hedging answer text>\n"
-        "Confident Answer: <new confident answer text>\n"
+def load_model(model_name: str):
+    """
+    Loads the tokenizer and model from Hugging Face.
+    Adjust torch_dtype and device_map as needed for your hardware.
+    """
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16,  # Use fp16 for efficiency on GPU
+        device_map="auto"
     )
-    return prompt
+    return tokenizer, model
 
-def parse_triplet(text: str) -> dict:
-    pattern = r"Question:\s*(.*?)\s*Hedging Answer:\s*(.*?)\s*Confident Answer:\s*(.*)"
-    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-    if match:
-        return {
-            "Question": match.group(1).strip(),
-            "Hedging_Answer": match.group(2).strip(),
-            "Confident_Answer": match.group(3).strip()
-        }
-    return None
+def generate_hedged_answer(model, tokenizer, original_answer: str, prompt_template: str, gen_params: dict):
+    """
+    Formats the prompt, runs the model, and extracts the hedged answer.
+    """
+    # Prepare the prompt using the provided template.
+    prompt = prompt_template.format(original_answer=original_answer)
+    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
+    
+    # Generate output using the provided generation parameters.
+    output_ids = model.generate(input_ids, **gen_params)
+    output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    
+    # Extract text following the "Hedged Answer:" marker.
+    if "Hedged Answer:" in output_text:
+        hedged_text = output_text.split("Hedged Answer:")[-1].strip()
+    else:
+        hedged_text = output_text.strip()
+    return hedged_text
 
-def main(num_new: int):
-    # Load original data and prepare few-shot examples.
-    df_orig = load_original_data(ORIGINAL_DATA_PATH)
-    few_shot = get_few_shot_examples(df_orig, NUM_FEW_SHOT)
-    prompt = build_prompt(few_shot)
+def main():
+    parser = argparse.ArgumentParser(
+        description="Augment CSV with hedged answers using a Llama 70B model from Hugging Face."
+    )
+    parser.add_argument(
+        "--csv", type=str, default="data.csv",
+        help="Path to the input CSV file (must contain an 'answer' column)."
+    )
+    parser.add_argument(
+        "--output", type=str, default="data_augmented.csv",
+        help="Path to save the augmented CSV file."
+    )
+    parser.add_argument(
+        "--model", type=str, default="decapoda-research/llama-70b",
+        help="Hugging Face model identifier for Llama 70B."
+    )
+    args = parser.parse_args()
 
-    # Load model and tokenizer; build text-generation pipeline.
-    tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_NAME)
-    model = AutoModelForCausalLM.from_pretrained(HF_MODEL_NAME)
-    generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
+    # Load the CSV
+    df = pd.read_csv(args.csv)
+    if 'answer' not in df.columns:
+        raise ValueError("CSV must contain a column named 'answer'.")
 
-    print("Generating new triplets...")
-    outputs = generator(prompt, num_return_sequences=num_new, max_new_tokens=150)
-    triplets = []
-    for i, out in enumerate(outputs, 1):
-        # Remove the prompt from the generated text if it's included.
-        text = out["generated_text"]
-        if text.startswith(prompt):
-            text = text[len(prompt):].strip()
-        triplet = parse_triplet(text)
-        if triplet:
-            triplets.append(triplet)
-            print(f"[{i}/{num_new}] Successfully parsed triplet.")
-        else:
-            print(f"[{i}/{num_new}] Failed to parse triplet.")
+    # Load the model and tokenizer
+    print("Loading model...")
+    tokenizer, model = load_model(args.model)
 
-    # Save the new triplets to CSV.
-    pd.DataFrame(triplets).to_csv(OUTPUT_DATA_PATH, index=False)
-    print(f"Saved {len(triplets)} triplets to {OUTPUT_DATA_PATH}")
+    # Define a prompt template optimized for generating hedged language.
+    prompt_template = (
+        "You are an expert language model specialized in rephrasing text with hedged language. "
+        "Please rephrase the following answer using cautious and tentative expressions (e.g., 'it seems', 'possibly', 'likely', etc.) while preserving the original meaning. "
+        "Do not add any extra commentary or modify the content beyond rephrasing. "
+        "Only output the rephrased answer.\n\n"
+        "Original Answer: \"{original_answer}\"\n\n"
+        "Hedged Answer:"
+    )
+
+    # Set generation parameters – feel free to adjust these based on your results.
+    gen_params = {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "do_sample": True,
+        "num_return_sequences": 1,
+    }
+
+    # Process each row and generate the hedged answer.
+    hedged_answers = []
+    print("Processing CSV rows...")
+    for idx, row in df.iterrows():
+        orig_ans = row['answer']
+        hedged_ans = generate_hedged_answer(model, tokenizer, orig_ans, prompt_template, gen_params)
+        hedged_answers.append(hedged_ans)
+        print(f"Processed row {idx + 1} of {len(df)}")
+
+    # Add the hedged answer as a new column and save the augmented CSV.
+    df["hedged_answer"] = hedged_answers
+    df.to_csv(args.output, index=False)
+    print(f"Augmented CSV saved to {args.output}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate new question-answer triplets using a Hugging Face model.")
-    parser.add_argument("--num", type=int, default=10, help="Number of new triplets to generate")
-    args = parser.parse_args()
-    main(args.num)
+    main()
