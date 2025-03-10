@@ -151,8 +151,8 @@ for epoch in tqdm(range(num_epochs), desc="Epoch"):
             confident_logits = confident_outputs.logits[:, -1, :].to(torch.float32)
 
             # Compute probabilities and scores in float32
-            hedged_probs = F.softmax(hedged_logits, dim=-1)[:, rating_tokens]
-            confident_probs = F.softmax(confident_logits, dim=-1)[:, rating_tokens]
+            hedged_probs = F.softmax(hedged_logits[:, rating_tokens], dim=-1)
+            confident_probs = F.softmax(confident_logits[:, rating_tokens], dim=-1)
             vocab_scores = torch.tensor([1, 2, 3, 4, 5], dtype=torch.float32, device=device)  # Float32 for loss
             hedged_scores = torch.sum(hedged_probs * vocab_scores, dim=-1)
             confident_scores = torch.sum(confident_probs * vocab_scores, dim=-1)
@@ -163,16 +163,21 @@ for epoch in tqdm(range(num_epochs), desc="Epoch"):
                                         F.softmax(confident_logits[:, rating_tokens], dim=-1), reduction='batchmean'))
             hidden_loss = torch.mean((hedged_hidden - confident_hidden) ** 2)
             reg_loss = 0.1 * torch.mean(hedged_scores ** 2 + confident_scores ** 2)
-            total_loss = 0.4 * score_loss + 0.3 * dist_loss + 0.2 * hidden_loss + 0.1 * reg_loss
+            l_c, l_d, l_h, l_r = 0.5, 0.5, 0.2, 0.1
+            total_loss = l_c * score_loss + l_d * dist_loss + l_h * hidden_loss + l_r * reg_loss
 
             # Backward pass (accelerate handles accumulation)
             accelerator.backward(total_loss)
+            
+            # Update optimizer
+            optimizer.step()
+            optimizer.zero_grad()
         if accelerator.is_main_process:
             loss_history['Total'].append(total_loss.item())
-            loss_history['Score'].append(score_loss.item())
-            loss_history['Dist'].append(dist_loss.item())
-            loss_history['Hidden'].append(hidden_loss.item())
-            loss_history['Reg'].append(reg_loss.item())
+            loss_history['Score'].append(l_c * score_loss.item())
+            loss_history['Dist'].append(l_d * dist_loss.item())
+            loss_history['Hidden'].append(l_h * hidden_loss.item())
+            loss_history['Reg'].append(l_r * reg_loss.item())
 
         # Report per-batch loss
         batch_pbar.set_postfix({
