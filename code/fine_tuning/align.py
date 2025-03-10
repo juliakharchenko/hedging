@@ -4,7 +4,7 @@ import pandas as pd
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import LoraConfig, get_peft_model
 import torch.nn.functional as F
-from tqdm import tqdm
+from tqdm.notebook import tqdm
 import gc
 from accelerate import Accelerator
 from collections import defaultdict
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 # Configuration
 MODEL_ID = "meta-llama/Llama-3.2-1B-Instruct"
-DATA_PATH = "../../data/hedging_finetuning_questions.csv"
+DATA_PATH = "./hedging_finetuning_questions.csv"
 SAVE_DIR = "fine_tuned_meta-llama_Llama-3.2-1B-Instruct"
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
@@ -56,7 +56,7 @@ The question that was asked was: "{question}"
 The interview response was: "{response}"
 Rating: """
 
-# Load model with 8-bit quantization
+# Load model with 8-bit quantization (SHOULD WORK BUT I'M NOT ABLE TO TEST SO I'M NOT SURE)
 # bnb_config = BitsAndBytesConfig(load_in_8bit=True)
 # tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
 # model = AutoModelForCausalLM.from_pretrained(
@@ -75,19 +75,18 @@ model = AutoModelForCausalLM.from_pretrained(
 
 # LoRA configuration
 lora_config = LoraConfig(
-    r=16,
+    r=32,
     lora_alpha=64,
     use_rslora=True,
-    # target_modules=["q_proj", "k_proj", "v_proj", "o_proj"], # potentially add mlp here if needed
-    target_modules=["q_proj", "k_proj"],
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj"],
     lora_dropout=0.1
 )
 model = get_peft_model(model, lora_config)
 
 # Training setup
-optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
-num_epochs = 3
-batch_size = 1
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0.01)
+num_epochs = 5
+batch_size = 2
 
 # Prepare model and optimizer with accelerate
 model, optimizer = accelerator.prepare(model, optimizer)
@@ -109,19 +108,6 @@ rating_tokens = [tokenizer.encode(str(i), add_special_tokens=False)[0] for i in 
 print(f"Rating token IDs: {rating_tokens}")
 
 loss_history = defaultdict(list)
-
-def plot_loss_history(history):
-    """Plot loss components over epochs"""
-    plt.figure(figsize=(10, 6))
-    for loss_name, values in history.items():
-        plt.plot(values, label=loss_name)
-    plt.xlabel('Batch')
-    plt.ylabel('Loss Value')
-    plt.title(f'Loss Components')
-    plt.legend()
-    plt.grid(True)
-    plt.close()
-
 for epoch in tqdm(range(num_epochs), desc="Epoch"):
     batch_pbar = tqdm(range(0, len(questions), batch_size), desc="Batch", leave=False)
     model.train()
@@ -168,8 +154,6 @@ for epoch in tqdm(range(num_epochs), desc="Epoch"):
 
             # Backward pass (accelerate handles accumulation)
             accelerator.backward(total_loss)
-            
-            # Update optimizer
             optimizer.step()
             optimizer.zero_grad()
         if accelerator.is_main_process:
@@ -195,10 +179,22 @@ for epoch in tqdm(range(num_epochs), desc="Epoch"):
             torch.cuda.empty_cache()
     gc.collect()
 
-plot_loss_history(loss_history)
-
 # Save the fine-tuned model (unwrap from accelerate)
 model = accelerator.unwrap_model(model)
 model.save_pretrained(SAVE_DIR)
 tokenizer.save_pretrained(SAVE_DIR)
 print(f"Model saved to {SAVE_DIR}")
+
+def plot_loss_history(history):
+    """Plot loss components over epochs"""
+    plt.figure(figsize=(10, 6))
+    for loss_name, values in history.items():
+        plt.plot(values, label=loss_name)
+    plt.xlabel('Batch')
+    plt.ylabel('Loss Value')
+    plt.title(f'Loss Components')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+plot_loss_history(loss_history)
