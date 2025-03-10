@@ -1,38 +1,26 @@
 import os
-import time
 import torch
-import torch.nn.functional as F
-from torch.optim import AdamW
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import pandas as pd
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import LoraConfig, get_peft_model
+import torch.nn.functional as F
 from tqdm import tqdm
+import gc
+from accelerate import Accelerator
+from collections import defaultdict
 import matplotlib.pyplot as plt
-from peft import get_peft_model, LoraConfig, TaskType
 
-# Configuration parameters
-MODEL_NAME = "openai-community/gpt2"
-DATA_PATH = "../../data/hedging_questions.csv"
-SAVE_DIR = f"fine_tuned_{MODEL_NAME.replace('/', '_')}"
-BATCH_SIZE = 2
-LEARNING_RATE = 5e-5
-NUM_EPOCHS = 3
-MAX_LENGTH = 512
-RATING_ALIGNMENT_WEIGHT = 2.0      # Weight for rating alignment loss
-DECISION_ALIGNMENT_WEIGHT = 1.0      # Weight for final decision alignment loss
-REPRESENTATION_ALIGNMENT_WEIGHT = 1.0  # Weight for representation (hidden state) alignment loss
-USE_LORA = True                    # Set to True to use LoRA
+# Configuration
+MODEL_ID = "meta-llama/Llama-3.2-1B-Instruct"
+DATA_PATH = "../../data/hedging_finetuning_questions.csv"
+SAVE_DIR = "fine_tuned_meta-llama_Llama-3.2-1B-Instruct"
+HF_TOKEN = os.environ.get("HF_TOKEN")
 
-# Device selection
-if torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    DEVICE = torch.device("mps")
-else:
-    DEVICE = torch.device("cpu")
-print(f"Using device: {DEVICE}")
+# Initialize Accelerator
+accelerator = Accelerator(gradient_accumulation_steps=4)  # Set accumulation steps
+device = accelerator.device  # Use accelerator's device (MPS, CUDA, or CPU)
+print(f"Using device: {device}\n")
 
-# Evaluation prompt components for rating alignment
 EVALUATION_CATEGORIES = [
     "Educational Background: Does the candidate have the appropriate educational qualifications or training for this position?",
     "Job/Organizational Fit: Has the candidate acquired similar skills or qualifications through past work experiences?",
@@ -46,11 +34,11 @@ EVALUATION_CATEGORIES = [
     "Attention to Detail: Was the candidate able to give provide examples of detail in their previous work experience?"
 ]
 
-EVAL_TEMPLATE = """
+EVALUATION_PROMPT = """
 You are a hiring manager evaluating a candidate's response to an interview question. You want to hire the best candidate for the job and are going to think critically and rate the candidate's response.
 
 Evaluate the interview response with the following categories in mind:
-{}
+{categories}
 
 You will rate the interview response on a scale from 1 to 5 based on the content of the response, using the following scale:
 5 - Far Exceeds Requirements: Perfect answer. Demonstrates competency accurately, consistently, and independently. All points relevant. The answer includes only good and relavant examples.
@@ -59,9 +47,8 @@ You will rate the interview response on a scale from 1 to 5 based on the content
 2 - Below Requirements: Demonstrates competency inconsistently, even with repeated instruction or guidance. Although the answer would benift from examples, few good examples provided.
 1 - Significant Gap: Fails to demonstrate competency regardless of guidance provided. Although the answer would benift from examples, no good examples provided.
 
-It is extremely important that as a response you provide a clear, detailed, and conscise explanation along with the rating.
+It is extremely important that as a response you only provide the number for the rating and nothing else
 Provide your response in the following format:
-Reasoning: <your reasoning>
 Rating: <your rating>
 
 Context:
@@ -69,282 +56,144 @@ The question that was asked was: "{question}"
 The interview response was: "{response}"
 Rating: """
 
-FINAL_DECISION_TEMPLATE = """
-You are a hiring manager evaluating a candidate's responses to an interview. You have asked the candidate a series of questions and rated their responses for each question from 1 to 5.
+# Load model with 8-bit quantization
+# bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+# tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+# model = AutoModelForCausalLM.from_pretrained(
+#     MODEL_ID, quantization_config=bnb_config, device_map={"": device}, token=HF_TOKEN
+# )
 
-Based on the following interview questions and the candidate's responses, determine whether the candidate should:
-- advance
-- advance with reservations
-- do not advance
+# Load model with FP16
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+tokenizer.pad_token = tokenizer.eos_token
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_ID,
+    torch_dtype=torch.float16,
+    device_map={"": device},
+    token=HF_TOKEN
+)
 
-For your response, provide your explanation and then simply output one of the following tokens as your final decision: "advance", "reservations", or "reject". These correspond to "advance", "advance with reservations", and "do not advance", respectively.
+# LoRA configuration
+lora_config = LoraConfig(
+    r=16,
+    lora_alpha=64,
+    use_rslora=True,
+    # target_modules=["q_proj", "k_proj", "v_proj", "o_proj"], # potentially add mlp here if needed
+    target_modules=["q_proj", "k_proj"],
+    lora_dropout=0.1
+)
+model = get_peft_model(model, lora_config)
 
-Provide your response in the following format:
-Reasoning: <your reasoning>
-Result: <your result>
+# Training setup
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
+num_epochs = 3
+batch_size = 1
 
-Context:
-The questions and the candidate's responses are:
-{responses}
-Result: """
+# Prepare model and optimizer with accelerate
+model, optimizer = accelerator.prepare(model, optimizer)
 
-# Precompute token ids for rating digits "1" to "5".
-def get_rating_token_ids(tokenizer):
-    rating_digits = ["1", "2", "3", "4", "5"]
-    return torch.tensor([tokenizer.convert_tokens_to_ids(d) for d in rating_digits], device=DEVICE)
+print("Trainable parameters:")
+for name, param in model.named_parameters():
+    if param.requires_grad:
+        print(f"- {name}")
+model.print_trainable_parameters()
 
-# Precompute token ids for decision tokens: "advance", "reservations", "reject"
-def get_decision_token_ids(tokenizer):
-    decision_tokens = ["advance", "reservations", "reject"]
-    return torch.tensor([tokenizer.convert_tokens_to_ids(tok) for tok in decision_tokens], device=DEVICE)
+# Load dataset
+df = pd.read_csv(DATA_PATH)
+questions = df["Question"].tolist()
+hedged_answers = df["Hedging_Answer"].tolist()
+confident_answers = df["Confident_Answer"].tolist()
 
-# Custom dataset that returns raw text.
-class QADataset(Dataset):
-    def __init__(self, data):
-        self.data = data
-    def __len__(self):
-        return len(self.data)
-    def __getitem__(self, idx):
-        sample = self.data[idx]
-        return {
-            "question": sample["question"],
-            "hedged_text": sample["answer_hedged"],
-            "confident_text": sample["answer_confident"]
-        }
+# Get token IDs for ratings 1-5
+rating_tokens = [tokenizer.encode(str(i), add_special_tokens=False)[0] for i in range(1, 6)]
+print(f"Rating token IDs: {rating_tokens}")
 
-def load_data(file_path):
-    df = pd.read_csv(file_path)
-    data = []
-    for _, row in df.iterrows():
-        data.append({
-            "question": row["Question"],
-            "answer_hedged": row["Hedging_Answer"],
-            "answer_confident": row["Confident_Answer"]
-        })
-    return data
+loss_history = defaultdict(list)
 
-def collate_fn(batch):
-    return batch
-
-# --- Existing Loss Functions ---
-
-def compute_rating_alignment_loss(prompt_texts_1, prompt_texts_2, model, tokenizer, rating_token_ids):
-    enc1 = tokenizer(prompt_texts_1, return_tensors="pt", padding=True)
-    enc2 = tokenizer(prompt_texts_2, return_tensors="pt", padding=True)
-    for key in enc1: enc1[key] = enc1[key].to(DEVICE)
-    for key in enc2: enc2[key] = enc2[key].to(DEVICE)
-    
-    with torch.no_grad():
-        lengths1 = enc1["attention_mask"].sum(dim=1)
-        lengths2 = enc2["attention_mask"].sum(dim=1)
-    
-    outputs1 = model(**enc1)
-    outputs2 = model(**enc2)
-    logits1 = outputs1.logits
-    logits2 = outputs2.logits
-
-    batch_size = logits1.size(0)
-    rating_logits_1 = []
-    rating_logits_2 = []
-    for i in range(batch_size):
-        idx1 = lengths1[i].item() - 1
-        idx2 = lengths2[i].item() - 1
-        token_logits1 = logits1[i, idx1, :]
-        token_logits2 = logits2[i, idx2, :]
-        rating_logits_1.append(token_logits1[rating_token_ids])
-        rating_logits_2.append(token_logits2[rating_token_ids])
-    rating_logits_1 = torch.stack(rating_logits_1, dim=0)
-    rating_logits_2 = torch.stack(rating_logits_2, dim=0)
-
-    p1 = F.softmax(rating_logits_1, dim=-1)
-    p2 = F.softmax(rating_logits_2, dim=-1)
-    kl1 = F.kl_div(p1.log(), p2, reduction="batchmean")
-    kl2 = F.kl_div(p2.log(), p1, reduction="batchmean")
-    loss = kl1 + kl2
-    return loss
-
-def compute_decision_alignment_loss(prompt_texts_1, prompt_texts_2, model, tokenizer, decision_token_ids):
-    enc1 = tokenizer(prompt_texts_1, return_tensors="pt", padding=True)
-    enc2 = tokenizer(prompt_texts_2, return_tensors="pt", padding=True)
-    for key in enc1: enc1[key] = enc1[key].to(DEVICE)
-    for key in enc2: enc2[key] = enc2[key].to(DEVICE)
-    
-    with torch.no_grad():
-        lengths1 = enc1["attention_mask"].sum(dim=1)
-        lengths2 = enc2["attention_mask"].sum(dim=1)
-    
-    outputs1 = model(**enc1)
-    outputs2 = model(**enc2)
-    logits1 = outputs1.logits
-    logits2 = outputs2.logits
-
-    batch_size = logits1.size(0)
-    decision_logits_1 = []
-    decision_logits_2 = []
-    for i in range(batch_size):
-        idx1 = lengths1[i].item() - 1
-        idx2 = lengths2[i].item() - 1
-        token_logits1 = logits1[i, idx1, :]
-        token_logits2 = logits2[i, idx2, :]
-        decision_logits_1.append(token_logits1[decision_token_ids])
-        decision_logits_2.append(token_logits2[decision_token_ids])
-    decision_logits_1 = torch.stack(decision_logits_1, dim=0)
-    decision_logits_2 = torch.stack(decision_logits_2, dim=0)
-
-    p1 = F.softmax(decision_logits_1, dim=-1)
-    p2 = F.softmax(decision_logits_2, dim=-1)
-    kl1 = F.kl_div(p1.log(), p2, reduction="batchmean")
-    kl2 = F.kl_div(p2.log(), p1, reduction="batchmean")
-    loss = kl1 + kl2
-    return loss
-
-# --- New Loss Function: Representation Alignment Loss ---
-def compute_hidden_state_alignment_loss(prompt_texts_1, prompt_texts_2, model, tokenizer):
-    enc1 = tokenizer(prompt_texts_1, return_tensors="pt", padding=True)
-    enc2 = tokenizer(prompt_texts_2, return_tensors="pt", padding=True)
-    for key in enc1: enc1[key] = enc1[key].to(DEVICE)
-    for key in enc2: enc2[key] = enc2[key].to(DEVICE)
-    
-    outputs1 = model(**enc1, output_hidden_states=True)
-    outputs2 = model(**enc2, output_hidden_states=True)
-    lengths1 = enc1["attention_mask"].sum(dim=1)
-    lengths2 = enc2["attention_mask"].sum(dim=1)
-    
-    hs1 = []
-    hs2 = []
-    for i in range(enc1["input_ids"].size(0)):
-        hs1.append(outputs1.hidden_states[-1][i, lengths1[i]-1, :])
-        hs2.append(outputs2.hidden_states[-1][i, lengths2[i]-1, :])
-    hs1 = torch.stack(hs1, dim=0)
-    hs2 = torch.stack(hs2, dim=0)
-    
-    cosine_loss = 1 - F.cosine_similarity(hs1, hs2, dim=-1).mean()
-    mse_loss = F.mse_loss(hs1, hs2)
-    return cosine_loss + mse_loss
-
-def train_alignment():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME).to(DEVICE)
-    if USE_LORA:
-        lora_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            inference_mode=False,
-            r=8,
-            lora_alpha=32,
-            lora_dropout=0.1,
-        )
-        model = get_peft_model(model, lora_config)
-
-    data = load_data(DATA_PATH)
-    dataset = QADataset(data)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
-    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
-
-    rating_token_ids = get_rating_token_ids(tokenizer)
-    decision_token_ids = get_decision_token_ids(tokenizer)
-
-    # --- Warm-up Step ---
-    start_time = time.time()
-    model.eval()
-    dummy_prompt_rating = EVAL_TEMPLATE.format("\n".join(EVALUATION_CATEGORIES), question="dummy", response="dummy")
-    dummy_prompt_decision = FINAL_DECISION_TEMPLATE.format(responses="Question: dummy\nResponse: dummy")
-    with torch.no_grad():
-        _ = compute_rating_alignment_loss([dummy_prompt_rating], [dummy_prompt_rating], model, tokenizer, rating_token_ids)
-        _ = compute_decision_alignment_loss([dummy_prompt_decision], [dummy_prompt_decision], model, tokenizer, decision_token_ids)
-        _ = compute_hidden_state_alignment_loss([dummy_prompt_rating], [dummy_prompt_rating], model, tokenizer)
-    model.train()
-    warmup_duration = time.time() - start_time
-    print(f"Warm-up complete in {warmup_duration:.2f} sec")
-    # --- End Warm-up ---
-
-    epoch_losses = []
-    epoch_times = []
-    batch_loss_history = []
-    global_batch_count = 0
-
-    for epoch in range(NUM_EPOCHS):
-        model.train()
-        total_loss = 0.0
-        start_time = time.time()
-        for batch in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{NUM_EPOCHS}"):
-            optimizer.zero_grad()
-            # Build prompts.
-            eval_prompts_hedged = []
-            eval_prompts_confident = []
-            final_decision_prompts_hedged = []
-            final_decision_prompts_confident = []
-            for sample in batch:
-                prompt_hedged = EVAL_TEMPLATE.format(
-                    "\n".join(EVALUATION_CATEGORIES),
-                    question=sample["question"],
-                    response=sample["hedged_text"]
-                )
-                prompt_confident = EVAL_TEMPLATE.format(
-                    "\n".join(EVALUATION_CATEGORIES),
-                    question=sample["question"],
-                    response=sample["confident_text"]
-                )
-                eval_prompts_hedged.append(prompt_hedged)
-                eval_prompts_confident.append(prompt_confident)
-                responses_context_hedged = f"Question: {sample['question']}\nHedged Response: {sample['hedged_text']}"
-                responses_context_confident = f"Question: {sample['question']}\nConfident Response: {sample['confident_text']}"
-                final_prompt_hedged = FINAL_DECISION_TEMPLATE.format(responses=responses_context_hedged)
-                final_prompt_confident = FINAL_DECISION_TEMPLATE.format(responses=responses_context_confident)
-                final_decision_prompts_hedged.append(final_prompt_hedged)
-                final_decision_prompts_confident.append(final_prompt_confident)
-            
-            rating_loss = RATING_ALIGNMENT_WEIGHT * compute_rating_alignment_loss(
-                eval_prompts_hedged, eval_prompts_confident, model, tokenizer, rating_token_ids
-            )
-            decision_loss = DECISION_ALIGNMENT_WEIGHT * compute_decision_alignment_loss(
-                final_decision_prompts_hedged, final_decision_prompts_confident, model, tokenizer, decision_token_ids
-            )
-            rep_loss = REPRESENTATION_ALIGNMENT_WEIGHT * compute_hidden_state_alignment_loss(
-                eval_prompts_hedged, eval_prompts_confident, model, tokenizer
-            )
-            
-            loss = rating_loss + decision_loss + rep_loss
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            batch_loss = loss.item()
-            total_loss += batch_loss
-            batch_loss_history.append(batch_loss)
-            global_batch_count += 1
-        epoch_duration = time.time() - start_time
-        avg_loss = total_loss / len(dataloader)
-        epoch_losses.append(avg_loss)
-        epoch_times.append(epoch_duration)
-        print(f"Epoch {epoch + 1} | Avg Loss: {avg_loss:.4f} | Time: {epoch_duration:.2f} sec")
-
-    # Plot epoch-level average losses.
-    plt.figure(figsize=(10, 4))
-    plt.subplot(1, 2, 1)
-    plt.plot(range(1, NUM_EPOCHS + 1), epoch_losses, marker='o')
-    plt.xlabel('Epoch')
-    plt.ylabel('Avg Loss')
-    plt.title('Epoch-Level Loss Progression')
-
-    # Plot batch-level loss history.
-    plt.subplot(1, 2, 2)
-    plt.plot(batch_loss_history, label='Batch Loss')
-    plt.xlabel('Batch Iteration')
-    plt.ylabel('Loss')
-    plt.title('Batch-Level Loss Progression')
+def plot_loss_history(history):
+    """Plot loss components over epochs"""
+    plt.figure(figsize=(10, 6))
+    for loss_name, values in history.items():
+        plt.plot(values, label=loss_name)
+    plt.xlabel('Batch')
+    plt.ylabel('Loss Value')
+    plt.title(f'Loss Components')
     plt.legend()
-    plt.tight_layout()
-    plt.show()
+    plt.grid(True)
+    plt.close()
 
-    os.makedirs(SAVE_DIR, exist_ok=True)
-    model.save_pretrained(SAVE_DIR)
-    tokenizer.save_pretrained(SAVE_DIR)
-    print(f"Model saved to {SAVE_DIR}")
+for epoch in tqdm(range(num_epochs), desc="Epoch"):
+    batch_pbar = tqdm(range(0, len(questions), batch_size), desc="Batch", leave=False)
+    model.train()
 
-if __name__ == "__main__":
-    hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token:
-        raise ValueError("HF_TOKEN environment variable not set")
-    train_alignment()
+    for i in batch_pbar:
+        batch_questions = questions[i:i + batch_size]
+        batch_hedged = hedged_answers[i:i + batch_size]
+        batch_confident = confident_answers[i:i + batch_size]
+
+        # Prepare inputs
+        hedged_prompts = [EVALUATION_PROMPT.format(categories="\n".join(EVALUATION_CATEGORIES), question=q, response=r) for q, r in zip(batch_questions, batch_hedged)]
+        confident_prompts = [EVALUATION_PROMPT.format(categories="\n".join(EVALUATION_CATEGORIES), question=q, response=r) for q, r in zip(batch_questions, batch_confident)]
+
+        hedged_inputs = tokenizer(hedged_prompts, return_tensors="pt", padding=True, truncation=True).to(device)
+        confident_inputs = tokenizer(confident_prompts, return_tensors="pt", padding=True, truncation=True).to(device)
+
+        # Use accelerator's gradient accumulation context
+        with accelerator.accumulate(model):
+            # Forward pass
+            hedged_outputs = model(**hedged_inputs, output_hidden_states=True)
+            confident_outputs = model(**confident_inputs, output_hidden_states=True)
+
+            # Extract hidden states and logits (cast to float32 for loss)
+            hedged_hidden = hedged_outputs.hidden_states[-1][:, -1, :].to(torch.float32)
+            confident_hidden = confident_outputs.hidden_states[-1][:, -1, :].to(torch.float32)
+            hedged_logits = hedged_outputs.logits[:, -1, :].to(torch.float32)
+            confident_logits = confident_outputs.logits[:, -1, :].to(torch.float32)
+
+            # Compute probabilities and scores in float32
+            hedged_probs = F.softmax(hedged_logits, dim=-1)[:, rating_tokens]
+            confident_probs = F.softmax(confident_logits, dim=-1)[:, rating_tokens]
+            vocab_scores = torch.tensor([1, 2, 3, 4, 5], dtype=torch.float32, device=device)  # Float32 for loss
+            hedged_scores = torch.sum(hedged_probs * vocab_scores, dim=-1)
+            confident_scores = torch.sum(confident_probs * vocab_scores, dim=-1)
+
+            # Loss components in float32
+            score_loss = torch.mean((hedged_scores - confident_scores) ** 2)
+            dist_loss = torch.mean(F.kl_div(F.log_softmax(hedged_logits[:, rating_tokens], dim=-1),
+                                        F.softmax(confident_logits[:, rating_tokens], dim=-1), reduction='batchmean'))
+            hidden_loss = torch.mean((hedged_hidden - confident_hidden) ** 2)
+            reg_loss = 0.1 * torch.mean(hedged_scores ** 2 + confident_scores ** 2)
+            total_loss = 0.4 * score_loss + 0.3 * dist_loss + 0.2 * hidden_loss + 0.1 * reg_loss
+
+            # Backward pass (accelerate handles accumulation)
+            accelerator.backward(total_loss)
+        if accelerator.is_main_process:
+            loss_history['Total'].append(total_loss.item())
+            loss_history['Score'].append(score_loss.item())
+            loss_history['Dist'].append(dist_loss.item())
+            loss_history['Hidden'].append(hidden_loss.item())
+            loss_history['Reg'].append(reg_loss.item())
+
+        # Report per-batch loss
+        batch_pbar.set_postfix({
+            "Total": f"{total_loss.item():.4f}",
+            "Score": f"{score_loss.item():.4f}",
+            "Dist": f"{dist_loss.item():.4f}",
+            "Hidden": f"{hidden_loss.item():.4f}",
+            "Reg": f"{reg_loss.item():.4f}"
+        })
+
+    if accelerator.is_main_process:  # Only main process handles cleanup
+        if device.type == "mps":
+            torch.mps.empty_cache()
+        elif device.type == "cuda":
+            torch.cuda.empty_cache()
+    gc.collect()
+
+plot_loss_history(loss_history)
+
+# Save the fine-tuned model (unwrap from accelerate)
+model = accelerator.unwrap_model(model)
+model.save_pretrained(SAVE_DIR)
+tokenizer.save_pretrained(SAVE_DIR)
+print(f"Model saved to {SAVE_DIR}")
