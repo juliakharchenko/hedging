@@ -59,6 +59,7 @@ Rating: """
 # Load model with 8-bit quantization (SHOULD WORK BUT I'M NOT ABLE TO TEST SO I'M NOT SURE)
 # bnb_config = BitsAndBytesConfig(load_in_8bit=True)
 # tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN)
+# tokenizer.pad_token = tokenizer.eos_token
 # model = AutoModelForCausalLM.from_pretrained(
 #     MODEL_ID, quantization_config=bnb_config, device_map={"": device}, token=HF_TOKEN
 # )
