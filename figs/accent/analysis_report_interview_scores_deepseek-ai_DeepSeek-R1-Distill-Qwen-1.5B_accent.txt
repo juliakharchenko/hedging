@@ -1,0 +1,29 @@
+Analysis Report for /mmfs1/gscratch/xlab/juliak24/hedging/accent/results/interview_scores_deepseek-ai_DeepSeek-R1-Distill-Qwen-1.5B_accent.csv
+============================================================
+
+T-test for Average Scores (Accented vs Confident):
+  t-statistic: -0.554
+  p-value: 5.827e-01
+
+Final Decision Counts by Response Type:
+final_answer_group  accept  reject
+response_type                     
+accent                  20       0
+confident               19       1
+
+Average Score by Final Decision Group:
+                        mean       std  count
+final_answer_group                           
+accept              3.802564  0.189858     39
+reject              3.400000       NaN      1
+
+Average Reasoning Length by Final Decision:
+                          mean        std  count
+final_answer_group                              
+accept              1287.74359  61.627368     39
+reject              1321.00000        NaN      1
+
+Correlation between Average Score and Reasoning Length:
+                  avg_score  reasoning_length
+avg_score          1.000000          0.160982
+reasoning_length   0.160982          1.000000

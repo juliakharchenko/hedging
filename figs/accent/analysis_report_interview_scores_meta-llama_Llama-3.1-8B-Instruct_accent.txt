@@ -1,0 +1,29 @@
+Analysis Report for /mmfs1/gscratch/xlab/juliak24/hedging/accent/results/interview_scores_meta-llama_Llama-3.1-8B-Instruct_accent.csv
+============================================================
+
+T-test for Average Scores (Accented vs Confident):
+  t-statistic: 5.257
+  p-value: 6.020e-06
+
+Final Decision Counts by Response Type:
+final_answer_group  accept  reject
+response_type                     
+accent                   6      14
+confident                3      17
+
+Average Score by Final Decision Group:
+                        mean       std  count
+final_answer_group                           
+accept              2.833333  0.173205      9
+reject              2.619355  0.192214     31
+
+Average Reasoning Length by Final Decision:
+                           mean         std  count
+final_answer_group                                
+accept              1167.666667  179.829781      9
+reject              1211.354839  180.778787     31
+
+Correlation between Average Score and Reasoning Length:
+                  avg_score  reasoning_length
+avg_score           1.00000           0.00663
+reasoning_length    0.00663           1.00000

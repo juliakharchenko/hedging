@@ -1,0 +1,29 @@
+Analysis Report for /mmfs1/gscratch/xlab/juliak24/hedging/accent/results/interview_scores_google_gemma-2-2b-it_accent.csv
+============================================================
+
+T-test for Average Scores (Accented vs Confident):
+  t-statistic: -4.727
+  p-value: 3.104e-05
+
+Final Decision Counts by Response Type:
+final_answer_group  accept  reject
+response_type                     
+accent                   8      12
+confident               14       6
+
+Average Score by Final Decision Group:
+                        mean       std  count
+final_answer_group                           
+accept              2.945455  0.179224     22
+reject              2.811111  0.140958     18
+
+Average Reasoning Length by Final Decision:
+                          mean        std  count
+final_answer_group                              
+accept              354.818182  61.299139     22
+reject              324.777778  51.654458     18
+
+Correlation between Average Score and Reasoning Length:
+                  avg_score  reasoning_length
+avg_score           1.00000           0.14607
+reasoning_length    0.14607           1.00000
